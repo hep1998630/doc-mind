@@ -34,6 +34,12 @@ class Point(BaseModel):
     y: float
 
 
+class ImageSize(BaseModel):
+    """Image dimensions in pixels."""
+    width: int
+    height: int
+
+
 class BoundingBox(BaseModel):
     """
     A quadrilateral bounding box defined by four corner points.
