@@ -55,6 +55,29 @@ class OCRSettings(BaseModel):
             "Regions below this threshold are discarded."
         ),
     )
+    device: str = Field(
+        default="gpu:0",
+        description=(
+            "Device for inference. 'gpu:0' for first GPU, "
+            "'gpu:1' for second GPU, 'cpu' for CPU."
+        ),
+    )
+    detection_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Text detection model name (e.g., 'PP-OCRv5_server_det', "
+            "'PP-OCRv5_mobile_det', 'PP-OCRv4_server_det'). "
+            "If None, uses PaddleOCR's default for the selected language."
+        ),
+    )
+    recognition_model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Text recognition model name (e.g., 'PP-OCRv5_server_rec', "
+            "'PP-OCRv5_mobile_rec', 'PP-OCRv4_server_rec'). "
+            "If None, uses PaddleOCR's default for the selected language."
+        ),
+    )
 
 
 class LayoutSettings(BaseModel):
