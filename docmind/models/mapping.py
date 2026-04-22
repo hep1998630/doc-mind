@@ -78,3 +78,13 @@ class MappingResult(BaseModel):
         default=0,
         description="Zero-based page index for multi-page documents.",
     )
+
+    @property
+    def empty_regions(self) -> list[MappedRegion]:
+        """
+        Layout regions that have no text regions assigned to them.
+
+        Useful for debugging — an empty TABLE region may indicate
+        a layout detection issue or an overly strict mapping threshold.
+        """
+        return [r for r in self.mapped_regions if not r.has_text]

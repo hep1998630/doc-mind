@@ -59,7 +59,7 @@ class PaddleOCREngine(BaseOCREngine):
         kwargs = {
             "use_angle_cls": True,
             "lang": primary_lang,
-            "show_log": False,
+            # "show_log": False,
             "device": device,
             # Disable PaddleOCR's internal document preprocessing.
             # We handle our own preprocessing, so letting PaddleOCR

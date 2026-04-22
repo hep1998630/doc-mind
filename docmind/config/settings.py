@@ -109,11 +109,11 @@ class MappingSettings(BaseModel):
         ),
     )
     use_center_containment: bool = Field(
-        default=True,
+        default=False,
         description=(
             "If True, assign text regions based on whether their center point "
             "falls within a layout region. Faster but less precise than "
-            "overlap-based assignment."
+            "overlap-based assignment. Default is False (use overlap)."
         ),
     )
 
