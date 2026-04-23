@@ -103,3 +103,80 @@ class ExtractionResult(BaseModel):
         default=0,
         description="Zero-based page index for multi-page documents.",
     )
+
+
+# --- LLM Response Schemas ---
+# These models define what the LLM should return, regardless of the
+# LLM implementation (LangChain, direct API, etc.). They are separate
+# from ExtractionResult because the LLM should only fill data fields,
+# not metadata like model name or raw text.
+
+
+class LLMExtractedField(BaseModel):
+    """A single extracted key-value pair for the LLM to produce."""
+    field_name: str = Field(
+        description=(
+            "Name of the extracted field "
+            "(e.g., 'vendor_name', 'invoice_date', 'total_amount')."
+        ),
+    )
+    value: str = Field(
+        description=(
+            "The extracted value as a string. "
+            "For numbers, use the string representation (e.g., '150.00')."
+        ),
+    )
+    confidence: float = Field(
+        description=(
+            "Your confidence in this extraction from 0.0 to 1.0. "
+            "Use lower values when text is ambiguous or partially illegible."
+        ),
+    )
+
+
+class LLMExtractedLineItem(BaseModel):
+    """A single line item row for the LLM to produce."""
+    description: str = Field(
+        description="Description of the item or service.",
+    )
+    amount: float = Field(
+        description="Total amount for this line item.",
+    )
+    quantity: Optional[float] = Field(
+        default=None,
+        description="Quantity of items. Use null if not present.",
+    )
+    unit_price: Optional[float] = Field(
+        default=None,
+        description="Price per unit. Use null if not present.",
+    )
+    item_code: Optional[str] = Field(
+        default=None,
+        description="Item code or SKU. Use null if not present.",
+    )
+    confidence: float = Field(
+        description=(
+            "Your confidence in this line item extraction from 0.0 to 1.0."
+        ),
+    )
+
+
+class LLMExtractionResponse(BaseModel):
+    """
+    The structured response schema that the LLM must produce.
+
+    This is the unified contract for any LLM implementation.
+    It contains only the data fields the LLM should fill —
+    metadata like model name and raw text are added by the
+    extractor after the LLM call.
+    """
+    fields: list[LLMExtractedField] = Field(
+        description=(
+            "Extracted scalar fields from the document "
+            "(e.g., vendor name, date, total)."
+        ),
+    )
+    line_items: list[LLMExtractedLineItem] = Field(
+        default_factory=list,
+        description="Extracted line items from tables in the document.",
+    )

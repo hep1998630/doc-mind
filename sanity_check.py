@@ -1,19 +1,26 @@
 """
 Sanity check script for DocMind modules.
 
+Settings are read from the .env file by default. CLI arguments
+override specific settings when provided.
+
 Usage:
-    # OCR only (preprocessing + OCR)
+    # OCR only (using settings from .env)
     python sanity_check.py <image_path>
 
-    # Full pipeline (preprocessing + OCR + layout + mapping)
-    python sanity_check.py <image_path> --layout <model_path>
+    # OCR + Extraction
+    python sanity_check.py <image_path> --extract invoice
+    python sanity_check.py <image_path> --extract receipt
 
-Examples:
-    python sanity_check.py samples/invoices/sample_invoice.jpg
-    python sanity_check.py samples/invoices/sample_invoice.jpg --layout weights/yolo_layout.pt
+    # Override specific settings via CLI
+    python sanity_check.py <image_path> --extract invoice --device cpu --conf 0.7
+
+    # Full pipeline with layout + mapping
+    python sanity_check.py <image_path> --layout weights/yolo_layout.pt --extract invoice
 
 Requirements:
     - PaddleOCR installed with GPU support
+    - For extraction: LangChain + provider SDK + API key in .env
     - For layout mode: ultralytics installed + YOLO model weights
 """
 
@@ -28,19 +35,14 @@ import numpy as np
 # Add project root to path so we can import docmind
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from docmind.config.settings import (
-    LayoutSettings,
-    MappingSettings,
-    OCRSettings,
-    PreprocessingSettings,
-)
+from docmind.config.settings import get_settings
+from docmind.models.common import DocumentType
 from docmind.modules.preprocessing.processor import ImagePreprocessor
 from docmind.modules.ocr.paddle_ocr import PaddleOCREngine
 
 
 # --- Visualization Helpers ---
 
-# Color palette for layout categories
 CATEGORY_COLORS = {
     "caption": (128, 0, 128),
     "footnote": (128, 128, 0),
@@ -115,10 +117,8 @@ def draw_mapping_results(image: np.ndarray, mapping_result) -> np.ndarray:
 
         color = CATEGORY_COLORS.get(lr.category.value, (255, 255, 255))
 
-        # Draw layout region
         cv2.rectangle(vis_image, (x1, y1), (x2, y2), color, 3)
 
-        # Label with category and text count
         label = f"{lr.category.value} [{len(mapped_region.text_regions)} texts]"
         label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
         cv2.rectangle(
@@ -130,13 +130,11 @@ def draw_mapping_results(image: np.ndarray, mapping_result) -> np.ndarray:
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA,
         )
 
-        # Draw contained text regions in lighter color
         for text_region in mapped_region.text_regions:
             points = [(int(p.x), int(p.y)) for p in text_region.bbox.corners]
             pts = np.array(points, dtype=np.int32)
             cv2.polylines(vis_image, [pts], isClosed=True, color=color, thickness=1)
 
-    # Draw unassigned text regions in red
     for text_region in mapping_result.unassigned_text_regions:
         points = [(int(p.x), int(p.y)) for p in text_region.bbox.corners]
         pts = np.array(points, dtype=np.int32)
@@ -151,9 +149,9 @@ def _ensure_bgr(image: np.ndarray) -> np.ndarray:
     return image.copy()
 
 
-# --- Main ---
+# --- Pipeline Steps ---
 
-def run_preprocessing(image_path: Path, settings: PreprocessingSettings):
+def run_preprocessing(image_path: Path, settings):
     """Run preprocessing and print results."""
     print("--- Preprocessing ---")
     preprocessor = ImagePreprocessor(settings=settings)
@@ -170,7 +168,7 @@ def run_preprocessing(image_path: Path, settings: PreprocessingSettings):
     return processed_image, metadata
 
 
-def run_ocr(processed_image: np.ndarray, settings: OCRSettings):
+def run_ocr(processed_image: np.ndarray, settings):
     """Run OCR and print results."""
     print("--- OCR (PaddleOCR) ---")
     ocr_engine = PaddleOCREngine(settings=settings)
@@ -211,7 +209,7 @@ def run_ocr(processed_image: np.ndarray, settings: OCRSettings):
     return ocr_result
 
 
-def run_layout(processed_image: np.ndarray, settings: LayoutSettings):
+def run_layout(processed_image: np.ndarray, settings):
     """Run layout analysis and print results."""
     from docmind.modules.layout.yolo_layout import YOLOLayoutAnalyzer
 
@@ -238,7 +236,6 @@ def run_layout(processed_image: np.ndarray, settings: LayoutSettings):
         )
     print()
 
-    # Category breakdown
     from collections import Counter
     categories = Counter(r.category.value for r in layout_result.regions)
     print("--- Layout Summary ---")
@@ -249,7 +246,7 @@ def run_layout(processed_image: np.ndarray, settings: LayoutSettings):
     return layout_result
 
 
-def run_mapping(ocr_result, layout_result, settings: MappingSettings):
+def run_mapping(ocr_result, layout_result, settings):
     """Run region mapping and print results."""
     from docmind.modules.mapping.region_mapper import RegionMapper
 
@@ -274,7 +271,6 @@ def run_mapping(ocr_result, layout_result, settings: MappingSettings):
             f"texts={len(mapped.text_regions)}{status}"
         )
         if mapped.has_text:
-            # Show first 80 chars of combined text
             preview = mapped.full_text[:80]
             if len(mapped.full_text) > 80:
                 preview += "..."
@@ -302,59 +298,170 @@ def run_mapping(ocr_result, layout_result, settings: MappingSettings):
     return mapping_result
 
 
+def run_extraction(ocr_result, document_type: DocumentType, settings):
+    """Run LLM extraction and print results."""
+    from docmind.modules.extraction.langchain_extractor import LangChainExtractor
+
+    print("--- LLM Extraction ---")
+    extractor = LangChainExtractor(settings=settings)
+
+    print(f"Provider:      {settings.provider}")
+    print(f"Model:         {settings.model}")
+    print(f"Document type: {document_type.value}")
+    print("Running extraction...")
+    print()
+
+    extraction_result = extractor.extract(ocr_result, document_type)
+
+    print("--- Extracted Fields ---")
+    if extraction_result.fields:
+        for field in extraction_result.fields:
+            print(
+                f"  {field.field_name:<20s} "
+                f"conf={field.confidence:.2f}  "
+                f"value={field.value}"
+            )
+    else:
+        print("  (no fields extracted)")
+    print()
+
+    print("--- Extracted Line Items ---")
+    if extraction_result.line_items:
+        for i, item in enumerate(extraction_result.line_items):
+            qty_str = f"qty={item.quantity}" if item.quantity is not None else "qty=n/a"
+            price_str = f"price={item.unit_price}" if item.unit_price is not None else "price=n/a"
+            code_str = f"code={item.item_code}" if item.item_code is not None else ""
+            print(
+                f"  [{i}] {item.description[:40]:<40s} "
+                f"amount={item.amount:<10.2f} "
+                f"{qty_str:<12s} {price_str:<14s} {code_str}"
+            )
+    else:
+        print("  (no line items extracted)")
+    print()
+
+    print("--- Extraction Summary ---")
+    print(f"Fields extracted:     {len(extraction_result.fields)}")
+    print(f"Line items extracted: {len(extraction_result.line_items)}")
+    print(f"LLM model used:      {extraction_result.model}")
+    if extraction_result.fields:
+        avg_conf = sum(f.confidence for f in extraction_result.fields) / len(extraction_result.fields)
+        print(f"Avg field confidence: {avg_conf:.3f}")
+    if extraction_result.line_items:
+        avg_conf = sum(i.confidence for i in extraction_result.line_items) / len(extraction_result.line_items)
+        print(f"Avg item confidence:  {avg_conf:.3f}")
+    print()
+
+    return extraction_result
+
+
+# --- Output Saving ---
+
 def save_outputs(image_path, processed_image, ocr_result,
-                 layout_result=None, mapping_result=None):
+                 layout_result=None, mapping_result=None,
+                 extraction_result=None):
     """Save visualization images and JSON results."""
     stem = image_path.stem
     parent = image_path.parent
 
-    # OCR visualization
     ocr_vis = draw_ocr_results(processed_image, ocr_result)
     ocr_vis_path = parent / f"{stem}_ocr_result.jpg"
     cv2.imwrite(str(ocr_vis_path), ocr_vis)
     print(f"OCR visualization:     {ocr_vis_path}")
 
-    # OCR JSON
     ocr_json_path = parent / f"{stem}_ocr_result.json"
     with open(ocr_json_path, "w", encoding="utf-8") as f:
         json.dump(ocr_result.model_dump(), f, indent=2, ensure_ascii=False)
     print(f"OCR JSON result:       {ocr_json_path}")
 
     if layout_result:
-        # Layout visualization
         layout_vis = draw_layout_results(processed_image, layout_result)
         layout_vis_path = parent / f"{stem}_layout_result.jpg"
         cv2.imwrite(str(layout_vis_path), layout_vis)
         print(f"Layout visualization:  {layout_vis_path}")
 
-        # Layout JSON
         layout_json_path = parent / f"{stem}_layout_result.json"
         with open(layout_json_path, "w", encoding="utf-8") as f:
             json.dump(layout_result.model_dump(), f, indent=2, ensure_ascii=False)
         print(f"Layout JSON result:    {layout_json_path}")
 
     if mapping_result:
-        # Mapping visualization
         mapping_vis = draw_mapping_results(processed_image, mapping_result)
         mapping_vis_path = parent / f"{stem}_mapping_result.jpg"
         cv2.imwrite(str(mapping_vis_path), mapping_vis)
         print(f"Mapping visualization: {mapping_vis_path}")
 
-        # Mapping JSON
         mapping_json_path = parent / f"{stem}_mapping_result.json"
         with open(mapping_json_path, "w", encoding="utf-8") as f:
             json.dump(mapping_result.model_dump(), f, indent=2, ensure_ascii=False)
         print(f"Mapping JSON result:   {mapping_json_path}")
 
+    if extraction_result:
+        extraction_json_path = parent / f"{stem}_extraction_result.json"
+        with open(extraction_json_path, "w", encoding="utf-8") as f:
+            json.dump(
+                extraction_result.model_dump(), f,
+                indent=2, ensure_ascii=False,
+            )
+        print(f"Extraction JSON:       {extraction_json_path}")
+
+        summary_path = parent / f"{stem}_extraction_summary.txt"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(f"Document Type: {extraction_result.document_type.value}\n")
+            f.write(f"Model: {extraction_result.model}\n")
+            f.write(f"\n{'=' * 40}\n")
+            f.write("FIELDS\n")
+            f.write(f"{'=' * 40}\n")
+            for field in extraction_result.fields:
+                f.write(f"{field.field_name}: {field.value}\n")
+            f.write(f"\n{'=' * 40}\n")
+            f.write("LINE ITEMS\n")
+            f.write(f"{'=' * 40}\n")
+            for item in extraction_result.line_items:
+                f.write(f"  {item.description} — {item.amount}\n")
+        print(f"Extraction summary:    {summary_path}")
+
+
+# --- Main ---
+
+def apply_cli_overrides(settings, args):
+    """
+    Apply CLI argument overrides to settings loaded from .env.
+
+    Only overrides values that were explicitly provided on the
+    command line. Returns a new settings object with overrides applied.
+    """
+    overrides = {}
+
+    # OCR overrides
+    if args.device is not None:
+        overrides["device"] = args.device
+    if args.lang is not None:
+        overrides["languages"] = args.lang
+    if args.conf is not None:
+        overrides["confidence_threshold"] = args.conf
+
+    if overrides:
+        return settings.model_copy(update=overrides)
+    return settings
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="DocMind sanity check — test preprocessing, OCR, layout, and mapping."
+        description="DocMind sanity check — test preprocessing, OCR, layout, mapping, and extraction.",
     )
     parser.add_argument(
         "image_path",
         type=str,
         help="Path to the document image to process.",
+    )
+    parser.add_argument(
+        "--extract",
+        type=str,
+        default=None,
+        choices=["invoice", "receipt"],
+        metavar="TYPE",
+        help="Document type for LLM extraction (invoice or receipt).",
     )
     parser.add_argument(
         "--layout",
@@ -366,21 +473,21 @@ def main():
     parser.add_argument(
         "--device",
         type=str,
-        default="gpu:0",
-        help="Device for inference (default: gpu:0).",
+        default=None,
+        help="Override OCR device (e.g., gpu:0, cpu).",
     )
     parser.add_argument(
         "--lang",
         type=str,
         nargs="+",
-        default=["ar", "en"],
-        help="OCR languages (default: ar en).",
+        default=None,
+        help="Override OCR languages (e.g., ar en).",
     )
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.5,
-        help="Confidence threshold (default: 0.5).",
+        default=None,
+        help="Override confidence threshold.",
     )
     args = parser.parse_args()
 
@@ -389,28 +496,39 @@ def main():
         print(f"Error: File not found: {image_path}")
         sys.exit(1)
 
+    # Load settings from .env
+    settings = get_settings()
+
+    # Determine mode
+    steps = ["Preprocessing", "OCR"]
+    if args.layout:
+        steps.extend(["Layout", "Mapping"])
+    if args.extract:
+        steps.append("Extraction")
+
     print(f"{'=' * 60}")
-    print(f"DocMind Sanity Check")
+    print("DocMind Sanity Check")
     print(f"{'=' * 60}")
-    print(f"Input:  {image_path}")
-    print(f"Mode:   {'Full pipeline (OCR + Layout + Mapping)' if args.layout else 'OCR only'}")
-    print(f"Device: {args.device}")
+    print(f"Input:    {image_path}")
+    print(f"Pipeline: {' -> '.join(steps)}")
+
+    # Apply CLI overrides to OCR settings
+    ocr_settings = apply_cli_overrides(settings.ocr, args)
+    print(f"Device:   {ocr_settings.device}")
+    print(f"Languages: {ocr_settings.languages}")
+    print(f"Conf threshold: {ocr_settings.confidence_threshold}")
+    if args.extract:
+        print(f"Doc type:  {args.extract}")
+        print(f"Provider:  {settings.extraction.provider}")
+        print(f"Model:     {settings.extraction.model}")
     print()
 
     # Step 1: Preprocessing
-    preprocessing_settings = PreprocessingSettings(
-        enable_deskew=True,
-        enable_denoise=True,
-        enable_binarize=False,
+    processed_image, metadata = run_preprocessing(
+        image_path, settings.preprocessing
     )
-    processed_image, metadata = run_preprocessing(image_path, preprocessing_settings)
 
     # Step 2: OCR
-    ocr_settings = OCRSettings(
-        languages=args.lang,
-        confidence_threshold=args.conf,
-        device=args.device,
-    )
     ocr_result = run_ocr(processed_image, ocr_settings)
 
     # Step 3 & 4: Layout + Mapping (optional)
@@ -418,20 +536,33 @@ def main():
     mapping_result = None
 
     if args.layout:
-        layout_settings = LayoutSettings(
-            model_path=args.layout,
-            confidence_threshold=args.conf,
+        layout_settings = settings.layout.model_copy(
+            update={"model_path": args.layout}
         )
+        if args.conf is not None:
+            layout_settings = layout_settings.model_copy(
+                update={"confidence_threshold": args.conf}
+            )
         layout_result = run_layout(processed_image, layout_settings)
 
-        mapping_settings = MappingSettings()
-        mapping_result = run_mapping(ocr_result, layout_result, mapping_settings)
+        mapping_result = run_mapping(
+            ocr_result, layout_result, settings.mapping
+        )
+
+    # Step 5: Extraction (optional)
+    extraction_result = None
+
+    if args.extract:
+        document_type = DocumentType(args.extract)
+        extraction_result = run_extraction(
+            ocr_result, document_type, settings.extraction
+        )
 
     # Save outputs
     print("--- Saving Outputs ---")
     save_outputs(
         image_path, processed_image, ocr_result,
-        layout_result, mapping_result,
+        layout_result, mapping_result, extraction_result,
     )
 
     print()
