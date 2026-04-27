@@ -191,7 +191,14 @@ class LangChainExtractor(BaseExtractor):
         )
 
         if self._structured_llm is not None:
-            llm_response = self._call_structured(messages)
+            try:
+                llm_response = self._call_structured(messages)
+            except Exception as e:
+                logger.warning(
+                    "Structured output failed at runtime, falling back "
+                    "to JSON prompting: %s", e,
+                )
+                llm_response = self._call_with_fallback(messages)
         else:
             llm_response = self._call_with_fallback(messages)
 
