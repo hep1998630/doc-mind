@@ -157,6 +157,14 @@ class ExtractionSettings(BaseModel):
         default=4096,
         description="Maximum number of tokens in the LLM response.",
     )
+    max_image_long_edge: int = Field(
+        default=1568,
+        description=(
+            "Maximum pixels on the long edge when sending images to VLM. "
+            "Images larger than this are resized before sending. "
+            "1568 matches Claude's native resolution; GPT-4o uses 2048."
+        ),
+    )
 
 
 # --- Top-Level Settings ---

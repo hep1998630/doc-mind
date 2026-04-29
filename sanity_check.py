@@ -355,6 +355,64 @@ def run_extraction(ocr_result, document_type: DocumentType, settings):
     return extraction_result
 
 
+def run_vlm_extraction(image_path: Path, document_type: DocumentType, settings):
+    """Run VLM extraction directly from image and print results."""
+    from docmind.modules.extraction.vlm_extractor import VLMExtractor
+
+    print("--- VLM Extraction (Image -> Structured Data) ---")
+    extractor = VLMExtractor(settings=settings)
+
+    print(f"Provider:      {settings.provider}")
+    print(f"Model:         {settings.model}")
+    print(f"Max image edge: {settings.max_image_long_edge}px")
+    print(f"Document type: {document_type.value}")
+    print("Running VLM extraction...")
+    print()
+
+    extraction_result = extractor.extract_from_image(image_path, document_type)
+
+    print("--- Extracted Fields ---")
+    if extraction_result.fields:
+        for field in extraction_result.fields:
+            print(
+                f"  {field.field_name:<20s} "
+                f"conf={field.confidence:.2f}  "
+                f"value={field.value}"
+            )
+    else:
+        print("  (no fields extracted)")
+    print()
+
+    print("--- Extracted Line Items ---")
+    if extraction_result.line_items:
+        for i, item in enumerate(extraction_result.line_items):
+            qty_str = f"qty={item.quantity}" if item.quantity is not None else "qty=n/a"
+            price_str = f"price={item.unit_price}" if item.unit_price is not None else "price=n/a"
+            code_str = f"code={item.item_code}" if item.item_code is not None else ""
+            print(
+                f"  [{i}] {item.description[:40]:<40s} "
+                f"amount={item.amount:<10.2f} "
+                f"{qty_str:<12s} {price_str:<14s} {code_str}"
+            )
+    else:
+        print("  (no line items extracted)")
+    print()
+
+    print("--- Extraction Summary ---")
+    print(f"Fields extracted:     {len(extraction_result.fields)}")
+    print(f"Line items extracted: {len(extraction_result.line_items)}")
+    print(f"LLM model used:      {extraction_result.model}")
+    if extraction_result.fields:
+        avg_conf = sum(f.confidence for f in extraction_result.fields) / len(extraction_result.fields)
+        print(f"Avg field confidence: {avg_conf:.3f}")
+    if extraction_result.line_items:
+        avg_conf = sum(i.confidence for i in extraction_result.line_items) / len(extraction_result.line_items)
+        print(f"Avg item confidence:  {avg_conf:.3f}")
+    print()
+
+    return extraction_result
+
+
 # --- Output Saving ---
 
 def save_outputs(image_path, processed_image, ocr_result,
@@ -461,7 +519,15 @@ def main():
         default=None,
         choices=["invoice", "receipt"],
         metavar="TYPE",
-        help="Document type for LLM extraction (invoice or receipt).",
+        help="Document type for OCR+LLM extraction (invoice or receipt).",
+    )
+    parser.add_argument(
+        "--vlm",
+        type=str,
+        default=None,
+        choices=["invoice", "receipt"],
+        metavar="TYPE",
+        help="Document type for VLM extraction — sends image directly to a multimodal LLM, skipping OCR.",
     )
     parser.add_argument(
         "--layout",
@@ -500,11 +566,16 @@ def main():
     settings = get_settings()
 
     # Determine mode
-    steps = ["Preprocessing", "OCR"]
-    if args.layout:
-        steps.extend(["Layout", "Mapping"])
-    if args.extract:
-        steps.append("Extraction")
+    is_vlm_mode = args.vlm is not None
+
+    if is_vlm_mode:
+        steps = ["VLM Extraction"]
+    else:
+        steps = ["Preprocessing", "OCR"]
+        if args.layout:
+            steps.extend(["Layout", "Mapping"])
+        if args.extract:
+            steps.append("Extraction")
 
     print(f"{'=' * 60}")
     print("DocMind Sanity Check")
@@ -512,58 +583,103 @@ def main():
     print(f"Input:    {image_path}")
     print(f"Pipeline: {' -> '.join(steps)}")
 
-    # Apply CLI overrides to OCR settings
-    ocr_settings = apply_cli_overrides(settings.ocr, args)
-    print(f"Device:   {ocr_settings.device}")
-    print(f"Languages: {ocr_settings.languages}")
-    print(f"Conf threshold: {ocr_settings.confidence_threshold}")
-    if args.extract:
-        print(f"Doc type:  {args.extract}")
-        print(f"Provider:  {settings.extraction.provider}")
-        print(f"Model:     {settings.extraction.model}")
-    print()
+    if is_vlm_mode:
+        print(f"Mode:     VLM (image -> structured data)")
+        print(f"Doc type: {args.vlm}")
+        print(f"Provider: {settings.extraction.provider}")
+        print(f"Model:    {settings.extraction.model}")
+        print()
 
-    # Step 1: Preprocessing
-    processed_image, metadata = run_preprocessing(
-        image_path, settings.preprocessing
-    )
-
-    # Step 2: OCR
-    ocr_result = run_ocr(processed_image, ocr_settings)
-
-    # Step 3 & 4: Layout + Mapping (optional)
-    layout_result = None
-    mapping_result = None
-
-    if args.layout:
-        layout_settings = settings.layout.model_copy(
-            update={"model_path": args.layout}
+        # VLM pipeline: image directly to VLM
+        document_type = DocumentType(args.vlm)
+        extraction_result = run_vlm_extraction(
+            image_path, document_type, settings.extraction
         )
-        if args.conf is not None:
-            layout_settings = layout_settings.model_copy(
-                update={"confidence_threshold": args.conf}
+
+        # Save outputs (no OCR results in VLM mode)
+        print("--- Saving Outputs ---")
+        stem = image_path.stem
+        parent = image_path.parent
+
+        extraction_json_path = parent / f"{stem}_vlm_extraction_result.json"
+        with open(extraction_json_path, "w", encoding="utf-8") as f:
+            json.dump(
+                extraction_result.model_dump(), f,
+                indent=2, ensure_ascii=False,
             )
-        layout_result = run_layout(processed_image, layout_settings)
+        print(f"VLM extraction JSON:   {extraction_json_path}")
 
-        mapping_result = run_mapping(
-            ocr_result, layout_result, settings.mapping
+        summary_path = parent / f"{stem}_vlm_extraction_summary.txt"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(f"Document Type: {extraction_result.document_type.value}\n")
+            f.write(f"Model: {extraction_result.model}\n")
+            f.write(f"Pipeline: VLM (direct image extraction)\n")
+            f.write(f"\n{'=' * 40}\n")
+            f.write("FIELDS\n")
+            f.write(f"{'=' * 40}\n")
+            for field in extraction_result.fields:
+                f.write(f"{field.field_name}: {field.value}\n")
+            f.write(f"\n{'=' * 40}\n")
+            f.write("LINE ITEMS\n")
+            f.write(f"{'=' * 40}\n")
+            for item in extraction_result.line_items:
+                f.write(f"  {item.description} — {item.amount}\n")
+        print(f"VLM extraction summary: {summary_path}")
+
+    else:
+        # OCR pipeline
+        # Apply CLI overrides to OCR settings
+        ocr_settings = apply_cli_overrides(settings.ocr, args)
+        print(f"Device:   {ocr_settings.device}")
+        print(f"Languages: {ocr_settings.languages}")
+        print(f"Conf threshold: {ocr_settings.confidence_threshold}")
+        if args.extract:
+            print(f"Doc type:  {args.extract}")
+            print(f"Provider:  {settings.extraction.provider}")
+            print(f"Model:     {settings.extraction.model}")
+        print()
+
+        # Step 1: Preprocessing
+        processed_image, metadata = run_preprocessing(
+            image_path, settings.preprocessing
         )
 
-    # Step 5: Extraction (optional)
-    extraction_result = None
+        # Step 2: OCR
+        ocr_result = run_ocr(processed_image, ocr_settings)
 
-    if args.extract:
-        document_type = DocumentType(args.extract)
-        extraction_result = run_extraction(
-            ocr_result, document_type, settings.extraction
+        # Step 3 & 4: Layout + Mapping (optional)
+        layout_result = None
+        mapping_result = None
+
+        if args.layout:
+            layout_settings = settings.layout.model_copy(
+                update={"model_path": args.layout}
+            )
+            if args.conf is not None:
+                layout_settings = layout_settings.model_copy(
+                    update={"confidence_threshold": args.conf}
+                )
+            layout_result = run_layout(processed_image, layout_settings)
+
+            mapping_result = run_mapping(
+                ocr_result, layout_result, settings.mapping
+            )
+
+        # Step 5: Extraction (optional)
+        extraction_result = None
+
+        if args.extract:
+            document_type = DocumentType(args.extract)
+            extraction_result = run_extraction(
+                ocr_result, document_type, settings.extraction
+            )
+
+        # Save outputs
+        print("--- Saving Outputs ---")
+        save_outputs(
+            image_path, processed_image, ocr_result,
+            layout_result, mapping_result, extraction_result,
         )
-
-    # Save outputs
-    print("--- Saving Outputs ---")
-    save_outputs(
-        image_path, processed_image, ocr_result,
-        layout_result, mapping_result, extraction_result,
-    )
 
     print()
     print(f"{'=' * 60}")
