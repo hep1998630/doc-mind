@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from docmind.models.common import Confidence, DocumentType
 
@@ -120,26 +120,39 @@ class LLMExtractedField(BaseModel):
             "(e.g., 'vendor_name', 'invoice_date', 'total_amount')."
         ),
     )
-    value: str = Field(
+    value: Optional[str] = Field(
+        default=None,
         description=(
             "The extracted value as a string. "
-            "For numbers, use the string representation (e.g., '150.00')."
+            "For numbers, use the string representation (e.g., '150.00'). "
+            "Use null if the field is not found in the document."
         ),
     )
     confidence: float = Field(
+        default=0.0,
         description=(
             "Your confidence in this extraction from 0.0 to 1.0. "
             "Use lower values when text is ambiguous or partially illegible."
         ),
     )
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def coerce_value_to_str(cls, v):
+        """Coerce non-string values to strings. Keep None as None."""
+        if v is None:
+            return None
+        return str(v)
+
 
 class LLMExtractedLineItem(BaseModel):
     """A single line item row for the LLM to produce."""
-    description: str = Field(
+    description: Optional[str] = Field(
+        default="",
         description="Description of the item or service.",
     )
-    amount: float = Field(
+    amount: Optional[float] = Field(
+        default=None,
         description="Total amount for this line item.",
     )
     quantity: Optional[float] = Field(
@@ -155,10 +168,30 @@ class LLMExtractedLineItem(BaseModel):
         description="Item code or SKU. Use null if not present.",
     )
     confidence: float = Field(
+        default=0.0,
         description=(
             "Your confidence in this line item extraction from 0.0 to 1.0."
         ),
     )
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def coerce_description(cls, v):
+        """Coerce None description to empty string."""
+        if v is None:
+            return ""
+        return str(v)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def coerce_amount(cls, v):
+        """Coerce string amounts to float."""
+        if v is None:
+            return None
+        try:
+            return float(str(v).replace(",", ""))
+        except (ValueError, TypeError):
+            return None
 
 
 class LLMExtractionResponse(BaseModel):
@@ -179,4 +212,111 @@ class LLMExtractionResponse(BaseModel):
     line_items: list[LLMExtractedLineItem] = Field(
         default_factory=list,
         description="Extracted line items from tables in the document.",
+    )
+
+
+# --- Utilities ---
+
+
+class ExtractionError(Exception):
+    """Raised when extraction fails in a categorizable way."""
+
+    def __init__(self, message: str, error_type: str):
+        super().__init__(message)
+        self.error_type = error_type
+
+
+def parse_llm_json_response(response_text: str) -> LLMExtractionResponse:
+    """
+    Parse an LLM response into an LLMExtractionResponse.
+
+    Handles common LLM output issues:
+    - Markdown fences (```json ... ```)
+    - Preamble text before JSON
+    - Trailing text after JSON
+    - Truncated JSON (attempts repair)
+    - Empty responses
+
+    Args:
+        response_text: Raw LLM response string.
+
+    Returns:
+        Parsed LLMExtractionResponse.
+
+    Raises:
+        ExtractionError: With categorized error type:
+            'empty_response', 'no_json_found', 'truncated_json',
+            'invalid_json', 'schema_validation_error'
+    """
+    import json
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not response_text or not response_text.strip():
+        raise ExtractionError(
+            "LLM returned an empty response",
+            error_type="empty_response",
+        )
+
+    text = response_text.strip()
+
+    # Strategy 1: Find JSON between first { and last }
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+
+    if first_brace == -1:
+        raise ExtractionError(
+            f"No JSON object found in response: {text[:200]}",
+            error_type="no_json_found",
+        )
+
+    if last_brace > first_brace:
+        json_str = text[first_brace:last_brace + 1]
+        try:
+            parsed = json.loads(json_str)
+            return LLMExtractionResponse(**parsed)
+        except json.JSONDecodeError:
+            pass  # Try repair strategies below
+        except Exception as e:
+            raise ExtractionError(
+                f"Schema validation failed: {e}",
+                error_type="schema_validation_error",
+            )
+
+    # Strategy 2: JSON might be truncated — try to repair
+    json_str = text[first_brace:]
+
+    # Close any unclosed brackets/braces
+    open_braces = json_str.count("{") - json_str.count("}")
+    open_brackets = json_str.count("[") - json_str.count("]")
+
+    if open_braces > 0 or open_brackets > 0:
+        # Truncated — attempt repair by closing open structures
+        repaired = json_str
+        repaired += "]" * max(0, open_brackets)
+        repaired += "}" * max(0, open_braces)
+
+        try:
+            parsed = json.loads(repaired)
+            logger.warning(
+                "Repaired truncated JSON (closed %d braces, %d brackets)",
+                max(0, open_braces), max(0, open_brackets),
+            )
+            return LLMExtractionResponse(**parsed)
+        except json.JSONDecodeError:
+            raise ExtractionError(
+                f"JSON appears truncated and could not be repaired. "
+                f"Response ends with: ...{text[-100:]}",
+                error_type="truncated_json",
+            )
+        except Exception as e:
+            raise ExtractionError(
+                f"Schema validation failed on repaired JSON: {e}",
+                error_type="schema_validation_error",
+            )
+
+    raise ExtractionError(
+        f"Could not parse JSON from response: {text[:200]}",
+        error_type="invalid_json",
     )

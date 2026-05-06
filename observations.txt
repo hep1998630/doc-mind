@@ -1,0 +1,27 @@
+
+
+VLMS: 
+
+gpt 4o: good extraction for amount, but hallucinates list items. 
+qwen2.5-vl-72b-instruct: Good overall output, lower cost than gpt 
+
+
+
+Models to test: 
+OCR + LLM: 
+    - gpt oss variants. 
+    - gpt 4o. 
+    - Deep Seek. 
+    - Qwen (not VL)
+    - Qwen VL. 
+    - Claude Sonnet. 
+    - Claude Opus. (Too big for  this task)
+    - Gemeni. (Not avilable in open router)
+
+
+VLM: 
+    - GPT 4o. 
+    - Qwen Vl variants. 
+    - Google Gemma 4
+    - Claude. 
+    - Deep seek ocr (ollama)

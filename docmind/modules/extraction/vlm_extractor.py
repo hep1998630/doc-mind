@@ -11,10 +11,12 @@ import numpy as np
 from docmind.config.settings import ExtractionSettings, get_settings
 from docmind.models.common import DocumentType
 from docmind.models.extraction import (
+    ExtractionError,
     ExtractionField,
     ExtractionResult,
     LineItem,
     LLMExtractionResponse,
+    parse_llm_json_response,
 )
 from docmind.modules.extraction.base import BaseVLMExtractor
 
@@ -182,6 +184,8 @@ class VLMExtractor(BaseVLMExtractor):
         if self._structured_llm is not None:
             try:
                 llm_response = self._call_structured(messages)
+            except ExtractionError:
+                raise
             except Exception as e:
                 logger.warning(
                     "VLM structured output failed at runtime, "
@@ -333,25 +337,7 @@ class VLMExtractor(BaseVLMExtractor):
         response = self._llm.invoke(messages_with_json)
         response_text = response.content
 
-        # Clean markdown fences
-        response_text = response_text.strip()
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            lines = [
-                l for l in lines
-                if not l.strip().startswith("```")
-            ]
-            response_text = "\n".join(lines)
-
-        try:
-            parsed = json.loads(response_text)
-            return LLMExtractionResponse(**parsed)
-        except (json.JSONDecodeError, Exception) as e:
-            logger.error(
-                "Failed to parse VLM response: %s\nResponse: %s",
-                e, response_text[:500],
-            )
-            return LLMExtractionResponse(fields=[], line_items=[])
+        return parse_llm_json_response(response_text)
 
     # --- Private: Result Building ---
 
@@ -373,14 +359,15 @@ class VLMExtractor(BaseVLMExtractor):
 
         line_items = [
             LineItem(
-                description=item.description,
-                amount=item.amount,
+                description=item.description or "",
+                amount=item.amount or 0.0,
                 quantity=item.quantity,
                 unit_price=item.unit_price,
                 item_code=item.item_code,
                 confidence=max(0.0, min(1.0, item.confidence)),
             )
             for item in llm_response.line_items
+            if item.description or item.amount is not None
         ]
 
         return ExtractionResult(

@@ -555,6 +555,13 @@ def main():
         default=None,
         help="Override confidence threshold.",
     )
+    parser.add_argument(
+        "--ocr-engine",
+        type=str,
+        default="paddleocr",
+        choices=["paddleocr", "deepseek-ocr"],
+        help="OCR engine to use (default: paddleocr).",
+    )
     args = parser.parse_args()
 
     image_path = Path(args.image_path)
@@ -628,15 +635,21 @@ def main():
 
     else:
         # OCR pipeline
-        # Apply CLI overrides to OCR settings
-        ocr_settings = apply_cli_overrides(settings.ocr, args)
-        print(f"Device:   {ocr_settings.device}")
-        print(f"Languages: {ocr_settings.languages}")
-        print(f"Conf threshold: {ocr_settings.confidence_threshold}")
+        ocr_engine_name = args.ocr_engine
+
+        if ocr_engine_name == "paddleocr":
+            ocr_settings = apply_cli_overrides(settings.ocr, args)
+            print(f"OCR engine: PaddleOCR")
+            print(f"Device:     {ocr_settings.device}")
+            print(f"Languages:  {ocr_settings.languages}")
+            print(f"Conf:       {ocr_settings.confidence_threshold}")
+        else:
+            print(f"OCR engine: DeepSeek-OCR (via Ollama)")
+
         if args.extract:
-            print(f"Doc type:  {args.extract}")
-            print(f"Provider:  {settings.extraction.provider}")
-            print(f"Model:     {settings.extraction.model}")
+            print(f"Doc type:   {args.extract}")
+            print(f"Provider:   {settings.extraction.provider}")
+            print(f"Model:      {settings.extraction.model}")
         print()
 
         # Step 1: Preprocessing
@@ -645,7 +658,23 @@ def main():
         )
 
         # Step 2: OCR
-        ocr_result = run_ocr(processed_image, ocr_settings)
+        if ocr_engine_name == "deepseek-ocr":
+            from docmind.modules.ocr.deepseek_ocr import DeepSeekOCREngine
+
+            print("--- OCR (DeepSeek-OCR) ---")
+            ds_engine = DeepSeekOCREngine(prompt_mode="markdown")
+            print("Running DeepSeek-OCR...")
+            ocr_result = ds_engine.recognize(processed_image)
+            print(f"Output length: {len(ocr_result.raw_text or '')} characters")
+            if ocr_result.raw_text:
+                preview = ocr_result.raw_text[:200]
+                if len(ocr_result.raw_text) > 200:
+                    preview += "..."
+                print(f"Preview:\n{preview}")
+            print()
+        else:
+            ocr_settings = apply_cli_overrides(settings.ocr, args)
+            ocr_result = run_ocr(processed_image, ocr_settings)
 
         # Step 3 & 4: Layout + Mapping (optional)
         layout_result = None

@@ -6,10 +6,12 @@ import logging
 from docmind.config.settings import ExtractionSettings, get_settings
 from docmind.models.common import DocumentType
 from docmind.models.extraction import (
+    ExtractionError,
     ExtractionField,
     ExtractionResult,
     LineItem,
     LLMExtractionResponse,
+    parse_llm_json_response,
 )
 from docmind.models.ocr import OCRResult
 from docmind.modules.extraction.base import BaseExtractor
@@ -193,6 +195,8 @@ class LangChainExtractor(BaseExtractor):
         if self._structured_llm is not None:
             try:
                 llm_response = self._call_structured(messages)
+            except ExtractionError:
+                raise
             except Exception as e:
                 logger.warning(
                     "Structured output failed at runtime, falling back "
@@ -214,18 +218,24 @@ class LangChainExtractor(BaseExtractor):
 
     def _format_ocr_text(self, ocr_result: OCRResult) -> str:
         """
-        Format OCR text regions as coordinate-tagged lines.
+        Format OCR output for LLM consumption.
 
-        Sorts regions top-to-bottom, then left-to-right within
-        the same line. Each region is formatted as:
-            [y=N, x=N] "text"
+        If the OCR engine produced raw_text (e.g., DeepSeek-OCR markdown),
+        uses that directly — it already carries layout information.
+
+        Otherwise, formats individual text regions as coordinate-tagged
+        lines sorted top-to-bottom, left-to-right.
 
         Args:
-            ocr_result: OCR results with text regions.
+            ocr_result: OCR results with text regions or raw_text.
 
         Returns:
-            Formatted string with all text regions.
+            Formatted string for the LLM prompt.
         """
+        # Use raw_text directly if available (e.g., DeepSeek-OCR)
+        if ocr_result.raw_text:
+            return ocr_result.raw_text
+
         if not ocr_result.text_regions:
             return "(No text detected)"
 
@@ -338,27 +348,7 @@ class LangChainExtractor(BaseExtractor):
         response = self._llm.invoke(messages_with_json)
         response_text = response.content
 
-        # Clean up potential markdown fences
-        response_text = response_text.strip()
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            # Remove first and last lines (``` markers)
-            lines = [
-                l for l in lines
-                if not l.strip().startswith("```")
-            ]
-            response_text = "\n".join(lines)
-
-        try:
-            parsed = json.loads(response_text)
-            return LLMExtractionResponse(**parsed)
-        except (json.JSONDecodeError, Exception) as e:
-            logger.error(
-                "Failed to parse LLM response as JSON: %s\nResponse: %s",
-                e, response_text[:500],
-            )
-            # Return empty result rather than crashing
-            return LLMExtractionResponse(fields=[], line_items=[])
+        return parse_llm_json_response(response_text)
 
     # --- Private: Result Building ---
 
@@ -395,14 +385,15 @@ class LangChainExtractor(BaseExtractor):
 
         line_items = [
             LineItem(
-                description=item.description,
-                amount=item.amount,
+                description=item.description or "",
+                amount=item.amount or 0.0,
                 quantity=item.quantity,
                 unit_price=item.unit_price,
                 item_code=item.item_code,
                 confidence=max(0.0, min(1.0, item.confidence)),
             )
             for item in llm_response.line_items
+            if item.description or item.amount is not None
         ]
 
         return ExtractionResult(

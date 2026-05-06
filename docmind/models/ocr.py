@@ -1,5 +1,7 @@
 """Schemas for the OCR module output."""
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 from docmind.models.common import (
@@ -47,4 +49,13 @@ class OCRResult(BaseModel):
     page_index: int = Field(
         default=0,
         description="Zero-based page index for multi-page documents.",
+    )
+    raw_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Full document text as a single string, used by OCR engines "
+            "that produce flowing text or markdown rather than individual "
+            "text regions (e.g., DeepSeek-OCR). When present, extractors "
+            "should use this directly instead of formatting text_regions."
+        ),
     )
