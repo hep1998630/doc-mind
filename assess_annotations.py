@@ -111,6 +111,9 @@ def main():
     image_sizes = Counter()
     transcription_languages = {"arabic": 0, "latin": 0, "mixed": 0, "numeric": 0}
 
+    # Per-image coverage tracking
+    per_image_coverage: list[dict] = []
+
     for annotation_file in files:
         try:
             stats = assess_single_file(annotation_file)
@@ -119,9 +122,10 @@ def main():
             continue
 
         total_objects += stats["total_objects"]
-        total_text_regions += (
+        text_region_count = (
             stats["with_transcription"] + stats["without_transcription"]
         )
+        total_text_regions += text_region_count
         total_with_transcription += stats["with_transcription"]
         total_without_transcription += stats["without_transcription"]
         all_classes += stats["classes"]
@@ -136,6 +140,20 @@ def main():
             files_with_any_transcription += 1
         else:
             files_without_any_transcription += 1
+
+        # Track per-image coverage
+        coverage_pct = (
+            stats["with_transcription"] / text_region_count * 100
+            if text_region_count > 0 else 0.0
+        )
+        per_image_coverage.append({
+            "file": stats["file"],
+            "text_regions": text_region_count,
+            "with_transcription": stats["with_transcription"],
+            "without_transcription": stats["without_transcription"],
+            "coverage_pct": coverage_pct,
+            "transcriptions": stats["transcriptions"],
+        })
 
     # Analyze transcription languages
     arabic_range = range(0x0600, 0x0700)
@@ -238,6 +256,97 @@ def main():
         print("transcribe at least 20-30 regions across your test set.")
         print()
 
+    # Per-image transcription coverage analysis
+    print("--- Per-Image Transcription Coverage ---")
+    if per_image_coverage:
+        # Coverage distribution buckets
+        buckets = {
+            "100%": 0,
+            "80-99%": 0,
+            "50-79%": 0,
+            "20-49%": 0,
+            "1-19%": 0,
+            "0%": 0,
+        }
+        for img in per_image_coverage:
+            pct = img["coverage_pct"]
+            if pct == 100:
+                buckets["100%"] += 1
+            elif pct >= 80:
+                buckets["80-99%"] += 1
+            elif pct >= 50:
+                buckets["50-79%"] += 1
+            elif pct >= 20:
+                buckets["20-49%"] += 1
+            elif pct > 0:
+                buckets["1-19%"] += 1
+            else:
+                buckets["0%"] += 1
+
+        print("  Coverage distribution:")
+        for bucket, count in buckets.items():
+            bar = "#" * min(count, 50)
+            print(f"    {bucket:>8s}: {count:>5d}  {bar}")
+        print()
+
+        # Top candidates sorted by coverage then by region count
+        candidates = [
+            img for img in per_image_coverage
+            if img["coverage_pct"] > 0
+        ]
+        candidates.sort(
+            key=lambda x: (x["coverage_pct"], x["with_transcription"]),
+            reverse=True,
+        )
+
+        print(f"  Images with any transcription: {len(candidates)}")
+        print()
+
+        if candidates:
+            print("  Top 30 candidates (highest coverage):")
+            print(
+                f"    {'File':<35s} "
+                f"{'Regions':>7s} {'Trans':>5s} {'Cover%':>6s}"
+            )
+            print(f"    {'-' * 55}")
+            for img in candidates[:30]:
+                print(
+                    f"    {img['file']:<35s} "
+                    f"{img['text_regions']:>7d} "
+                    f"{img['with_transcription']:>5d} "
+                    f"{img['coverage_pct']:>5.1f}%"
+                )
+            print()
+
+            # Thresholds summary
+            for threshold in [80, 50, 30]:
+                qualifying = [
+                    img for img in candidates
+                    if img["coverage_pct"] >= threshold
+                ]
+                print(
+                    f"  Images with >= {threshold}% coverage: "
+                    f"{len(qualifying)}"
+                )
+            print()
+
+        # Save candidate list to JSON
+        output_dir = path if path.is_dir() else path.parent
+        candidates_path = output_dir / "annotation_candidates.json"
+        candidates_export = [
+            {
+                "file": img["file"],
+                "text_regions": img["text_regions"],
+                "with_transcription": img["with_transcription"],
+                "coverage_pct": round(img["coverage_pct"], 1),
+            }
+            for img in candidates
+        ]
+        with open(candidates_path, "w", encoding="utf-8") as f:
+            json.dump(candidates_export, f, indent=2, ensure_ascii=False)
+        print(f"  Candidate list saved to: {candidates_path}")
+        print()
+
     # Usability assessment
     print("--- Data Usability Assessment ---")
     if total_text_regions == 0:
@@ -247,16 +356,33 @@ def main():
         print("  but cannot measure text reading accuracy.")
         print("  Recommendation: Manually annotate 20-30 transcriptions")
         print("  for a representative subset.")
-    elif total_with_transcription < 20:
-        print(f"  LIMITED: Only {total_with_transcription} transcriptions available.")
-        print("  Enough for a rough CER/WER estimate, but not statistically")
-        print("  reliable. Consider adding more transcriptions.")
-    elif total_with_transcription < 100:
-        print(f"  MODERATE: {total_with_transcription} transcriptions available.")
-        print("  Sufficient for meaningful CER/WER evaluation.")
     else:
-        print(f"  GOOD: {total_with_transcription} transcriptions available.")
-        print("  Strong evaluation dataset.")
+        high_coverage = [
+            img for img in per_image_coverage
+            if img["coverage_pct"] >= 80
+        ]
+        medium_coverage = [
+            img for img in per_image_coverage
+            if img["coverage_pct"] >= 50
+        ]
+
+        if len(high_coverage) >= 30:
+            print(f"  GOOD: {len(high_coverage)} images with >= 80% transcription coverage.")
+            print("  Sufficient for LLM-assisted ground truth generation.")
+            print("  Recommended approach: feed these to a large LLM for")
+            print("  structured extraction, then review manually.")
+        elif len(medium_coverage) >= 30:
+            print(f"  MODERATE: {len(medium_coverage)} images with >= 50% coverage.")
+            print("  Can use for LLM-assisted annotation, but expect gaps.")
+            print("  Consider supplementing with OCR output for missing regions.")
+        elif len(high_coverage) > 0 or len(medium_coverage) > 0:
+            print(f"  LIMITED: Only {len(high_coverage)} images with >= 80% coverage,")
+            print(f"  {len(medium_coverage)} with >= 50% coverage.")
+            print("  Consider using VLM (image-based) annotation instead of")
+            print("  text-based LLM annotation for better coverage.")
+        else:
+            print("  INSUFFICIENT: No images with meaningful transcription coverage.")
+            print("  Recommend using VLM-based annotation directly from images.")
 
     print()
     print(f"{'=' * 60}")
