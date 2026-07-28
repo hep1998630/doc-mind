@@ -6,7 +6,7 @@ for ground truth annotation. Saves the selection to a JSON file
 that can be fed to generate_ground_truth.py.
 
 Usage:
-    streamlit run select_images.py
+    streamlit run scripts/select_images.py
 """
 
 import json
@@ -253,7 +253,7 @@ def main():
     st.divider()
     st.caption(
         f"Selection saved to: `{output_path}` | "
-        f"Use with: `python generate_ground_truth.py ... --selection {output_path}`"
+        f"Use with: `python scripts/generate_ground_truth.py ... --selection {output_path}`"
     )
 
 

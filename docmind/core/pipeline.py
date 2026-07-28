@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from docmind.config.settings import Settings, get_settings
-from docmind.models.common import DocumentType
+from docmind.models.common import DocumentType, ImageSize
 from docmind.models.extraction import ExtractionResult
 from docmind.models.preprocessing import PreprocessingMetadata
 
@@ -95,13 +95,19 @@ class Pipeline:
 
     def _detect_mode(self) -> str:
         """
-        Auto-detect pipeline mode from settings.
+        Resolve the pipeline mode from settings.
 
-        Defaults to 'vlm' since it outperforms OCR+LLM for Arabic
+        Reads ``settings.pipeline_mode`` (default 'vlm'). VLM is the
+        recommended default since it outperforms OCR+LLM for Arabic
         invoices based on benchmarking results.
         """
-        # Default to VLM — override with explicit mode if needed
-        return "vlm"
+        mode = (self._settings.pipeline_mode or "vlm").lower()
+        if mode not in ("vlm", "ocr"):
+            raise ValueError(
+                f"Invalid pipeline_mode setting: {mode!r} "
+                "(expected 'vlm' or 'ocr')"
+            )
+        return mode
 
     def _initialize_components(self) -> dict:
         """Initialize pipeline components based on mode."""
@@ -149,6 +155,34 @@ class Pipeline:
 
         return components
 
+    def _passthrough_metadata(
+        self, image: np.ndarray | str | Path
+    ) -> PreprocessingMetadata:
+        """
+        Build no-op preprocessing metadata for VLM mode.
+
+        VLM mode does not alter the image before extraction, so the
+        metadata records the original dimensions with no operations
+        applied and ``was_modified=False``.
+        """
+        if isinstance(image, np.ndarray):
+            height, width = image.shape[:2]
+        else:
+            import cv2
+
+            loaded = cv2.imread(str(image))
+            if loaded is None:
+                raise ValueError(f"Could not load image: {image}")
+            height, width = loaded.shape[:2]
+
+        size = ImageSize(width=width, height=height)
+        return PreprocessingMetadata(
+            original_size=size,
+            processed_size=size,
+            operations_applied=[],
+            was_modified=False,
+        )
+
     def process(
         self,
         image: np.ndarray | str | Path,
@@ -173,28 +207,21 @@ class Pipeline:
         """
         start_time = time.time()
 
-        preprocessor = self._components["preprocessor"]
-
         if self._mode == "vlm":
-            # VLM mode: preprocess for basic cleanup, then send
-            # original image to VLM (VLM handles its own image reading)
-            processed_image, prep_metadata = preprocessor.process(image)
-
+            # VLM mode: send the ORIGINAL image straight to the model.
+            # The OCR-oriented preprocessing (grayscale/deskew/denoise)
+            # is destructive for vision models — grayscale in particular
+            # strips colour cues (stamps, logos, highlighted totals) that
+            # help extraction. The VLM extractor does its own image
+            # loading and resizing, and passing a file path lets it read
+            # the original bytes without a lossy re-encode.
             extractor = self._components["extractor"]
-            # Pass the original image path if available (better quality
-            # than re-encoding the preprocessed numpy array).
-            # Fall back to preprocessed array if input was an array.
-            if isinstance(image, (str, Path)):
-                extraction = extractor.extract_from_image(
-                    image, document_type
-                )
-            else:
-                extraction = extractor.extract_from_image(
-                    processed_image, document_type
-                )
+            extraction = extractor.extract_from_image(image, document_type)
+            prep_metadata = self._passthrough_metadata(image)
 
         elif self._mode == "ocr":
             # OCR mode: preprocess → OCR → LLM extraction
+            preprocessor = self._components["preprocessor"]
             processed_image, prep_metadata = preprocessor.process(image)
 
             ocr_engine = self._components["ocr_engine"]

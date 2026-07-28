@@ -12,8 +12,7 @@ Configuration is read from .env file.
 
 import base64
 import logging
-import time
-from pathlib import Path
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import numpy as np
@@ -23,7 +22,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
-    Request,
+    Response,
     Security,
     UploadFile,
 )
@@ -39,6 +38,25 @@ logger = logging.getLogger(__name__)
 
 # --- App Setup ---
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize the pipeline on startup, clean up on shutdown."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger.info("Starting DocMind API")
+
+    # Pre-initialize pipeline so the first request isn't slow.
+    get_pipeline()
+    logger.info("Pipeline ready")
+
+    yield
+
+    logger.info("Shutting down DocMind API")
+
+
 app = FastAPI(
     title="DocMind",
     description=(
@@ -46,6 +64,7 @@ app = FastAPI(
         "invoices and receipts using AI."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # --- Security ---
@@ -211,9 +230,10 @@ def build_response(pipeline_result: PipelineResult) -> ExtractionResponse:
 
 
 def build_error_response(
-    error_type: str, message: str, status_code: int
+    response: Response, error_type: str, message: str, status_code: int
 ) -> ExtractionResponse:
-    """Build an error API response."""
+    """Build an error API response and set the HTTP status code."""
+    response.status_code = status_code
     return ExtractionResponse(
         status="error",
         error={
@@ -235,6 +255,7 @@ def build_error_response(
     ),
 )
 async def extract_from_upload(
+    response: Response,
     file: UploadFile = File(..., description="Document image file (JPEG or PNG)"),
     document_type: str = Form(
         default="invoice",
@@ -269,6 +290,7 @@ async def extract_from_upload(
     except ExtractionError as e:
         logger.error("Extraction failed [%s]: %s", e.error_type, e)
         return build_error_response(
+            response,
             error_type=e.error_type,
             message=str(e),
             status_code=422,
@@ -276,6 +298,7 @@ async def extract_from_upload(
     except Exception as e:
         logger.exception("Unexpected error during extraction")
         return build_error_response(
+            response,
             error_type="internal_error",
             message=str(e),
             status_code=500,
@@ -293,6 +316,7 @@ async def extract_from_upload(
 )
 async def extract_from_base64(
     request: Base64ExtractionRequest,
+    response: Response,
     api_key: str = Depends(verify_api_key),
 ):
     """Extract structured data from a base64-encoded document image."""
@@ -307,6 +331,7 @@ async def extract_from_base64(
     except ExtractionError as e:
         logger.error("Extraction failed [%s]: %s", e.error_type, e)
         return build_error_response(
+            response,
             error_type=e.error_type,
             message=str(e),
             status_code=422,
@@ -314,6 +339,7 @@ async def extract_from_base64(
     except Exception as e:
         logger.exception("Unexpected error during extraction")
         return build_error_response(
+            response,
             error_type="internal_error",
             message=str(e),
             status_code=500,
@@ -351,25 +377,3 @@ async def service_info():
         provider=settings.extraction.provider,
         supported_document_types=["invoice", "receipt"],
     )
-
-
-# --- Startup/Shutdown Events ---
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the pipeline on startup."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    logger.info("Starting DocMind API")
-
-    # Pre-initialize pipeline so first request isn't slow
-    get_pipeline()
-    logger.info("Pipeline ready")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    logger.info("Shutting down DocMind API")

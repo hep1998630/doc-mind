@@ -5,10 +5,10 @@ A Streamlit-based interface for reviewing, editing, and validating
 LLM-generated ground truth extraction data.
 
 Usage:
-    streamlit run review_app.py -- <ground_truth_dir> <image_dir>
+    streamlit run scripts/review_app.py -- <ground_truth_dir> <image_dir>
 
 Example:
-    streamlit run review_app.py -- ground_truth/ samples/invoices/
+    streamlit run scripts/review_app.py -- ground_truth/ samples/invoices/
 """
 
 import json
@@ -361,7 +361,7 @@ def main():
         st.divider()
         st.caption(
             "Or run from command line: "
-            "`streamlit run review_app.py -- ground_truth/ samples/invoices/`"
+            "`streamlit run scripts/review_app.py -- ground_truth/ samples/invoices/`"
         )
         return
 

@@ -5,8 +5,8 @@ Loads all evaluation report JSON files and generates a side-by-side
 comparison of different model/pipeline configurations.
 
 Usage:
-    python compare_reports.py <ground_truth_dir>
-    python compare_reports.py ground_truth/ --output comparison.json
+    python scripts/compare_reports.py <ground_truth_dir>
+    python scripts/compare_reports.py ground_truth/ --output comparison.json
 
 The script automatically finds all report_*.json files in the directory.
 """
