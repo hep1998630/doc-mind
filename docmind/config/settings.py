@@ -203,6 +203,20 @@ class Settings(BaseSettings):
         default="INFO",
         description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     )
+    pipeline_mode: str = Field(
+        default="vlm",
+        description=(
+            "Pipeline mode: 'vlm' for vision LLM (recommended), "
+            "'ocr' for OCR+LLM."
+        ),
+    )
+    api_keys: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of valid API keys for authentication. "
+            "Leave empty to disable authentication (dev mode)."
+        ),
+    )
 
     model_config = {
         "env_nested_delimiter": "__",

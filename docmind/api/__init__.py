@@ -1,0 +1,1 @@
+"""DocMind FastAPI application package."""
