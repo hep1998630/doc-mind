@@ -7,17 +7,17 @@ models/settings to accumulate reports for comparison.
 
 Usage:
     # Evaluate OCR+LLM pipeline
-    python evaluate_extraction.py <ground_truth_dir> <image_dir> --mode ocr
+    python scripts/evaluate_extraction.py <ground_truth_dir> <image_dir> --mode ocr
 
     # Evaluate VLM pipeline
-    python evaluate_extraction.py <ground_truth_dir> <image_dir> --mode vlm
+    python scripts/evaluate_extraction.py <ground_truth_dir> <image_dir> --mode vlm
 
     # Custom report name
-    python evaluate_extraction.py gt/ images/ --mode vlm --report-name qwen_vl_72b
+    python scripts/evaluate_extraction.py gt/ images/ --mode vlm --report-name qwen_vl_72b
 
 Examples:
-    python evaluate_extraction.py ground_truth/ samples/invoices/ --mode ocr
-    python evaluate_extraction.py ground_truth/ samples/invoices/ --mode vlm --report-name gpt4o_vlm
+    python scripts/evaluate_extraction.py ground_truth/ samples/invoices/ --mode ocr
+    python scripts/evaluate_extraction.py ground_truth/ samples/invoices/ --mode vlm --report-name gpt4o_vlm
 """
 
 import argparse
@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from docmind.config.settings import get_settings
 

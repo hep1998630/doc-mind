@@ -5,12 +5,12 @@ Scans annotation files to assess data quality and coverage
 before running OCR evaluation.
 
 Usage:
-    python assess_annotations.py <annotation_dir>
-    python assess_annotations.py <single_annotation.json>
+    python scripts/assess_annotations.py <annotation_dir>
+    python scripts/assess_annotations.py <single_annotation.json>
 
 Examples:
-    python assess_annotations.py samples/annotations/
-    python assess_annotations.py samples/annotations/001.json
+    python scripts/assess_annotations.py samples/annotations/
+    python scripts/assess_annotations.py samples/annotations/001.json
 """
 
 import json
@@ -73,7 +73,7 @@ def assess_single_file(annotation_path: Path) -> dict:
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python assess_annotations.py <annotation_path>")
+        print("Usage: python scripts/assess_annotations.py <annotation_path>")
         sys.exit(1)
 
     path = Path(sys.argv[1])

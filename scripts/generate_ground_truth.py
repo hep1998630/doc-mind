@@ -6,8 +6,8 @@ fills gaps with OCR output, sends the combined text to a large LLM
 for structured extraction, and saves the result for human review.
 
 Usage:
-    python generate_ground_truth.py <image_dir> <annotation_dir> <output_dir>
-    python generate_ground_truth.py images/ annotations/ ground_truth/ --count 40
+    python scripts/generate_ground_truth.py <image_dir> <annotation_dir> <output_dir>
+    python scripts/generate_ground_truth.py images/ annotations/ ground_truth/ --count 40
 """
 
 import argparse
@@ -21,7 +21,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from docmind.config.settings import get_settings
 from docmind.modules.preprocessing.processor import ImagePreprocessor
@@ -722,7 +722,7 @@ def main():
     print()
     print("Next steps:")
     print("  1. Run the review app to validate:")
-    print(f"     streamlit run review_app.py -- {output_dir} {image_dir}")
+    print(f"     streamlit run scripts/review_app.py -- {output_dir} {image_dir}")
     print("  2. Review and correct each entry")
     print("  3. Use verified entries for extraction evaluation")
     print(f"{'=' * 60}")

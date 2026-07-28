@@ -17,17 +17,17 @@ Metrics calculated:
 
 Usage:
     # Evaluate a single image
-    python evaluate_ocr.py <image_path> <annotation_json_path>
+    python scripts/evaluate_ocr.py <image_path> <annotation_json_path>
 
     # Evaluate a directory of images
-    python evaluate_ocr.py <image_dir> <annotation_dir>
+    python scripts/evaluate_ocr.py <image_dir> <annotation_dir>
 
     # With custom settings
-    python evaluate_ocr.py <image_path> <annotation_json> --containment-threshold 0.5
+    python scripts/evaluate_ocr.py <image_path> <annotation_json> --containment-threshold 0.5
 
 Examples:
-    python evaluate_ocr.py samples/invoices/001.jpg samples/annotations/001.json
-    python evaluate_ocr.py samples/invoices/ samples/annotations/
+    python scripts/evaluate_ocr.py samples/invoices/001.jpg samples/annotations/001.json
+    python scripts/evaluate_ocr.py samples/invoices/ samples/annotations/
 """
 
 import argparse
@@ -40,7 +40,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from docmind.config.settings import get_settings
 from docmind.models.common import BoundingBox

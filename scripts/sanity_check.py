@@ -6,17 +6,21 @@ override specific settings when provided.
 
 Usage:
     # OCR only (using settings from .env)
-    python sanity_check.py <image_path>
+    python scripts/sanity_check.py <image_path>
 
     # OCR + Extraction
-    python sanity_check.py <image_path> --extract invoice
-    python sanity_check.py <image_path> --extract receipt
+    python scripts/sanity_check.py <image_path> --extract invoice
+    python scripts/sanity_check.py <image_path> --extract receipt
+
+    # Full Pipeline orchestrator (core/pipeline.py) — mode from PIPELINE_MODE
+    python scripts/sanity_check.py <image_path> --pipeline invoice
+    python scripts/sanity_check.py <image_path> --pipeline invoice --mode ocr
 
     # Override specific settings via CLI
-    python sanity_check.py <image_path> --extract invoice --device cpu --conf 0.7
+    python scripts/sanity_check.py <image_path> --extract invoice --device cpu --conf 0.7
 
     # Full pipeline with layout + mapping
-    python sanity_check.py <image_path> --layout weights/yolo_layout.pt --extract invoice
+    python scripts/sanity_check.py <image_path> --layout weights/yolo_layout.pt --extract invoice
 
 Requirements:
     - PaddleOCR installed with GPU support
@@ -33,7 +37,7 @@ import cv2
 import numpy as np
 
 # Add project root to path so we can import docmind
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from docmind.config.settings import get_settings
 from docmind.models.common import DocumentType
@@ -298,6 +302,89 @@ def run_mapping(ocr_result, layout_result, settings):
     return mapping_result
 
 
+def print_extraction(extraction_result):
+    """Print extracted fields and line items in the standard format."""
+    print("--- Extracted Fields ---")
+    if extraction_result.fields:
+        for field in extraction_result.fields:
+            print(
+                f"  {field.field_name:<20s} "
+                f"conf={field.confidence:.2f}  "
+                f"value={field.value}"
+            )
+    else:
+        print("  (no fields extracted)")
+    print()
+
+    print("--- Extracted Line Items ---")
+    if extraction_result.line_items:
+        for i, item in enumerate(extraction_result.line_items):
+            qty_str = f"qty={item.quantity}" if item.quantity is not None else "qty=n/a"
+            price_str = f"price={item.unit_price}" if item.unit_price is not None else "price=n/a"
+            code_str = f"code={item.item_code}" if item.item_code is not None else ""
+            print(
+                f"  [{i}] {item.description[:40]:<40s} "
+                f"amount={item.amount:<10.2f} "
+                f"{qty_str:<12s} {price_str:<14s} {code_str}"
+            )
+    else:
+        print("  (no line items extracted)")
+    print()
+
+
+def run_pipeline(image_path: Path, document_type: DocumentType, mode):
+    """
+    Run the full Pipeline orchestrator (core/pipeline.py) end to end.
+
+    Unlike the standalone --extract / --vlm steps, this exercises the
+    Pipeline class exactly as the API does: the mode is resolved from
+    the PIPELINE_MODE setting (or the --mode override), the OCR-oriented
+    preprocessing is applied only in OCR mode, and a PipelineResult
+    (extraction + processing metadata) is returned.
+    """
+    from docmind.core.pipeline import Pipeline
+
+    print("--- Pipeline (core orchestrator) ---")
+    pipeline = Pipeline(mode=mode)
+
+    print(f"Mode:          {pipeline.mode}")
+    print(f"Model:         {pipeline.model_name}")
+    print(f"Document type: {document_type.value}")
+    print("Running pipeline...")
+    print()
+
+    result = pipeline.process(image_path, document_type)
+    extraction_result = result.extraction
+
+    # Preprocessing metadata — in VLM mode this should report no
+    # operations applied, since the original image goes straight to
+    # the model without OCR-oriented cleanup.
+    meta = result.preprocessing_metadata
+    print("--- Preprocessing Metadata ---")
+    print(f"Original size:  {meta.original_size.width} x {meta.original_size.height}")
+    print(f"Processed size: {meta.processed_size.width} x {meta.processed_size.height}")
+    print(f"Was modified:   {meta.was_modified}")
+    if meta.operations_applied:
+        print("Operations applied:")
+        for op in meta.operations_applied:
+            print(f"  - {op.name}: {op.parameters}")
+    else:
+        print("Operations:     (none)")
+    print()
+
+    print_extraction(extraction_result)
+
+    print("--- Pipeline Summary ---")
+    print(f"Pipeline mode:        {result.pipeline_mode}")
+    print(f"Processing time:      {result.processing_time_seconds:.2f}s")
+    print(f"Fields extracted:     {len(extraction_result.fields)}")
+    print(f"Line items extracted: {len(extraction_result.line_items)}")
+    print(f"LLM model used:       {extraction_result.model}")
+    print()
+
+    return result
+
+
 def run_extraction(ocr_result, document_type: DocumentType, settings):
     """Run LLM extraction and print results."""
     from docmind.modules.extraction.langchain_extractor import LangChainExtractor
@@ -530,6 +617,21 @@ def main():
         help="Document type for VLM extraction — sends image directly to a multimodal LLM, skipping OCR.",
     )
     parser.add_argument(
+        "--pipeline",
+        type=str,
+        default=None,
+        choices=["invoice", "receipt"],
+        metavar="TYPE",
+        help="Run the full Pipeline orchestrator (core/pipeline.py). Mode is read from PIPELINE_MODE unless --mode is given.",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=["vlm", "ocr"],
+        help="Override the pipeline mode for --pipeline (default: PIPELINE_MODE from .env).",
+    )
+    parser.add_argument(
         "--layout",
         type=str,
         default=None,
@@ -573,9 +675,12 @@ def main():
     settings = get_settings()
 
     # Determine mode
+    is_pipeline_mode = args.pipeline is not None
     is_vlm_mode = args.vlm is not None
 
-    if is_vlm_mode:
+    if is_pipeline_mode:
+        steps = ["Pipeline orchestrator"]
+    elif is_vlm_mode:
         steps = ["VLM Extraction"]
     else:
         steps = ["Preprocessing", "OCR"]
@@ -590,7 +695,48 @@ def main():
     print(f"Input:    {image_path}")
     print(f"Pipeline: {' -> '.join(steps)}")
 
-    if is_vlm_mode:
+    if is_pipeline_mode:
+        print(f"Mode:     Pipeline orchestrator")
+        print(f"Doc type: {args.pipeline}")
+        print(f"Provider: {settings.extraction.provider}")
+        print(f"Model:    {settings.extraction.model}")
+        if args.mode:
+            print(f"Mode override: {args.mode}")
+        print()
+
+        document_type = DocumentType(args.pipeline)
+        result = run_pipeline(image_path, document_type, args.mode)
+        extraction_result = result.extraction
+
+        # Save outputs — full PipelineResult (extraction + metadata)
+        print("--- Saving Outputs ---")
+        stem = image_path.stem
+        parent = image_path.parent
+
+        pipeline_json_path = parent / f"{stem}_pipeline_result.json"
+        with open(pipeline_json_path, "w", encoding="utf-8") as f:
+            json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
+        print(f"Pipeline JSON:         {pipeline_json_path}")
+
+        summary_path = parent / f"{stem}_pipeline_summary.txt"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(f"Document Type: {extraction_result.document_type.value}\n")
+            f.write(f"Model: {extraction_result.model}\n")
+            f.write(f"Pipeline mode: {result.pipeline_mode}\n")
+            f.write(f"Processing time: {result.processing_time_seconds:.2f}s\n")
+            f.write(f"\n{'=' * 40}\n")
+            f.write("FIELDS\n")
+            f.write(f"{'=' * 40}\n")
+            for field in extraction_result.fields:
+                f.write(f"{field.field_name}: {field.value}\n")
+            f.write(f"\n{'=' * 40}\n")
+            f.write("LINE ITEMS\n")
+            f.write(f"{'=' * 40}\n")
+            for item in extraction_result.line_items:
+                f.write(f"  {item.description} — {item.amount}\n")
+        print(f"Pipeline summary:      {summary_path}")
+
+    elif is_vlm_mode:
         print(f"Mode:     VLM (image -> structured data)")
         print(f"Doc type: {args.vlm}")
         print(f"Provider: {settings.extraction.provider}")
